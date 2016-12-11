@@ -1,20 +1,8 @@
 ; temp file used to quickly test PS/2 keyboard interface
 
-scratch0=$80
-scratch1=$81
-kbdstate=$82
+kbscan=$81
 
-VIA_B=$100000
-VIA_A=$101000
-VIA_DDR_B=$102000
-VIA_DDR_A=$103000
-
-A_KBCLK=$02                            ; PS/2 keyboard clock (o/c)
-B_KBDATA=$40                            ; PS/2 keyboard data (o/c)
-
-		org $10000
-
-
+		org $800
 
 
 1: 		lda <VIA_DDR_A		; release clock
@@ -25,31 +13,31 @@ B_KBDATA=$40                            ; PS/2 keyboard data (o/c)
 
 ; XXX - check for proper start bit, error if not
 
-		stz >scratch0		; clear scratch0
+		stz >kbscan		; clear kbscan
 
 		jsr wait		; bit 0
-		ror >scratch0
+		ror >kbscan
 
 		jsr wait		; bit 1
-		ror >scratch0
+		ror >kbscan
 		
 		jsr wait		; bit 2
-		ror >scratch0
+		ror >kbscan
 		
 		jsr wait		; bit 3
-		ror >scratch0
+		ror >kbscan
 		
 		jsr wait		; bit 4
-		ror >scratch0
+		ror >kbscan
 		
 		jsr wait		; bit 5
-		ror >scratch0
+		ror >kbscan
 
 		jsr wait		; bit 6
-		ror >scratch0
+		ror >kbscan
 
 		jsr wait		; bit 7
-		ror >scratch0
+		ror >kbscan
 
 		jsr wait		; parity
 
@@ -63,13 +51,13 @@ B_KBDATA=$40                            ; PS/2 keyboard data (o/c)
 		ora #>A_KBCLK
 		sta <VIA_DDR_A
 
-		lda >scratch0
+		lda >kbscan
 		lsr
 		lsr
 		lsr
 		lsr
 		jsr hexout
-		lda >scratch0
+		lda >kbscan
 		and #>$0f
 		jsr hexout
 
@@ -80,7 +68,8 @@ chars:		byte $30,$31,$32,$33,$34,$35,$36,$37
 
 hexout:		tax
 		lda <chars,x
-		jsr <$60000
+		brk
+		byte 0
 		rts
 		
 
