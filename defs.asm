@@ -62,7 +62,7 @@ kbscan:		bss 1			; keyboard scan code
 
 	; FORTH
 
-rp:		bss 2			; return stack pointer
+rp:		bss 2			; RP: return stack pointer
 
 	; RS-232 
 
@@ -90,8 +90,9 @@ crc:		bss 2			; 16-bit CRC accumulator
 stack:		bss 256			; stack's traditional location
 S0=.-1					; initial stack pointer value
 
+TIB=.					; FORTH terminal input buffer (TIB)
 rstack:		bss 256			; FORTH return stack
-R0=.-1					; initial return stack value
+R0=.-2					; initial RP value
 
 	; RS-232 receive buffer must be a full page,
 	; and must start at a page boundary.

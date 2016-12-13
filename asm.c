@@ -50,7 +50,7 @@ struct mnemonic {
 
 void brk_handler(void);
 void byte_handler(void), word_handler(void), long_handler(void);
-void org_handler(void), bss_handler(void);
+void org_handler(void), bss_handler(void), fcs_handler(void);
 
 struct mnemonic mnemonics[] = {
 	{ "ADC", .abs=0x6d, .ax=0x7d, .ay=0x79, .al=0x6F, .alx=0x7F, 
@@ -93,6 +93,7 @@ struct mnemonic mnemonics[] = {
 		.id=0x52, .idl=0x47, .idsy=0x53, .idx=0x41, .idy=0x51, 
 		.idyl=0x57, .iax=0x5d, .d=0x45, .ds=0x43, .dx=0x55,
 		.imm=0x49, .i16=0x49 },
+	{ "FCS", .handler = fcs_handler },
 	{ "INC", .inh=0x1a, .abs=0xee, .ax=0xfe, .d=0xe6, .dx=0xf6 },
 	{ "INX", .inh=0xe8 },
 	{ "INY", .inh=0xc8 },
@@ -151,7 +152,7 @@ struct mnemonic mnemonics[] = {
 	{ "STY", .abs=0x8c, .d=0x84, .dx=0x94 },
 	{ "STZ", .abs=0x9c, .ax=0x9e, .d=0x64, .dx=0x74 },
 	{ "TAX", .inh=0xaa },
-	{ "TAY", .inh=0xab },
+	{ "TAY", .inh=0xa8 },
 	{ "TCD", .inh=0x5b },
 	{ "TCS", .inh=0x1b },
 	{ "TDC", .inh=0x7b },
@@ -620,6 +621,26 @@ void word_handler(void) { con(2); }
 void long_handler(void) { con(3); }
 
 void bss_handler(void) { pc += get_value(1); }
+
+void fcs_handler(void) 
+{
+	int i = *curp;
+	char *start;
+
+	if (!isprint(i)) error("missing string");
+
+	start = ++curp;
+	while (*curp && (*curp != i)) curp++;
+	if (!*curp) error("missing closing delimiter");
+
+	while (start < curp) {
+		i = *start++;
+		if (start == curp) i |= 0x80;
+		emit(1, i);
+	}
+
+	curp++;
+}
 
 void org_handler(void) { 
 	int value = get_value(1); 

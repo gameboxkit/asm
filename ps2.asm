@@ -1,8 +1,10 @@
 ; temp file used to quickly test PS/2 keyboard interface
 
-kbscan=$81
+		org $400
 
-		org $800
+		jmp $500
+
+		org $500
 
 
 1: 		lda <VIA_DDR_A		; release clock

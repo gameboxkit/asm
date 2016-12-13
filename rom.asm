@@ -90,7 +90,7 @@ reset:		jmp <1f			; set PBR properly
 		lda #0			; clear hidden accumulator
 		sep #>%00100000		; 8-bit accumulator
 
-		ldx #stack+$ff		; stack lives here
+		ldx #S0			; stack lives here
 		txs 		
 
 	; Initialize the VIA.
