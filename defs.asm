@@ -58,6 +58,11 @@ scratch0:	bss 1			; general scratch use
 scratch1:	bss 1			
 
 vblk:		bss 1			; $FF/$00 = vertical blanking/not
+kbscan:		bss 1			; keyboard scan code
+
+	; FORTH
+
+rp:		bss 2			; return stack pointer
 
 	; RS-232 
 
@@ -69,7 +74,7 @@ recvtl:		bss 2			; tail of recvbuf (read ptr)
 
 	; XMODEM 
 
-xmaddr:		bss 3			; far pointer to buffer
+xmaddr:		bss 2			; far pointer to buffer
 xmblkno:	bss 1			; expected block #
 xmretry:	bss 1			; retry counter
 xmctl:		bss 1			; either ACK or NAK
@@ -83,10 +88,13 @@ crc:		bss 2			; 16-bit CRC accumulator
 		org $100
 
 stack:		bss 256			; stack's traditional location
+S0=.-1					; initial stack pointer value
+
+rstack:		bss 256			; FORTH return stack
+R0=.-1					; initial return stack value
 
 	; RS-232 receive buffer must be a full page,
 	; and must start at a page boundary.
 
 recvbuf:	bss 256			; RS-232 receive buffer
-
 
