@@ -1,5 +1,9 @@
 ; temp file used to quickly test PS/2 keyboard interface
 
+kbscan:		bss 1
+
+
+
 		org $400
 
 		jmp $500

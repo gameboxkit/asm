@@ -1,4 +1,56 @@
 ; ***************************************************************************
+; 
+; Configurable parameters
+
+MHZ=5000000			; 5MHz clock speed
+BAUD=9600			; serial baud rate
+
+; ***************************************************************************
+;
+; RAM storage
+
+; direct page
+; keep these where the 6502 did, $000000-$0000FF.
+
+		org $0
+
+scratch0:	bss 1			; general scratch use
+scratch1:	bss 1			
+
+	; RS-232 
+
+recvc:		bss 1			; serial input shift register
+recvcnt:	bss 1			; bit counter for serial input
+recvbit:	bss 1			; receive bit state
+recvhd:		bss 2			; head of recvbuf (write ptr)
+recvtl:		bss 2			; tail of recvbuf (read ptr)
+
+	; XMODEM 
+
+xmaddr:		bss 2			; far pointer to buffer
+xmblkno:	bss 1			; expected block #
+xmretry:	bss 1			; retry counter
+xmctl:		bss 1			; either ACK or NAK
+
+	; CRC-16 routines
+
+crc:		bss 2			; 16-bit CRC accumulator
+
+; non direct-page storage
+
+
+		org $100
+
+stack:		bss 256			; stack's traditional location
+S0=.-1					; initial S value
+
+	; RS-232 receive buffer must be a full page,
+	; and must start at a page boundary.
+
+recvbuf:	bss 256			; RS-232 receive buffer
+
+
+; ***************************************************************************
 ;
 ; vectors
 ;
@@ -499,6 +551,9 @@ recvidle:	lda #>IRQ_T1		; disable Timer 1 interrupts
 ;	5,S	caller A		all user registers are
 ; 	3,S	caller X		saved as 16-bit
 ;	1,S	caller Y		regardless of their state on entry
+; 
+; System call entry points may assume 16-bit registers, and
+; the high byte of the accumulator is 0.
 
 REG_Y=1
 REG_X=3
@@ -507,7 +562,7 @@ REG_P=7
 REG_PC=8
 REG_PBR=10
 
-sysenter:	rep #>%00110000		; 16-bit registers
+sysenter:	rep #>%00110100		; 16-bit registers, enable IRQ
 		pha
 		phx
 		phy

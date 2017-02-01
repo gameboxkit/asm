@@ -752,7 +752,6 @@ void assemble(struct mnemonic *mnep)
 				match(')');
 				insn(mnep->iax, 2, value);
 			} else {
-				curp++;
 				match(')');
 				insn(mnep->ia, 2, value);
 			}

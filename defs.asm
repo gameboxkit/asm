@@ -1,9 +1,15 @@
 ; ***************************************************************************
-; 
-; Configurable parameters
+;
+; AVC 
 
-MHZ=5000000			; 5MHz clock speed
-BAUD=9600			; serial baud rate
+AVC_BLOCKS=$80000		; sprite control blocks
+AVC_TILES=$88000		; tile pixel data
+AVC_MAP=$8C000			; map 
+AVC_MAP_X=$8C800		; map X offset
+AVC_MAP_Y=$8C801		; map Y offset
+AVC_PALETTE=$8D000		; color palette
+AVC_SPRITES=$8E000		; sprite pixel RAM
+AVC_AUDIO=$8F000		; audio control
 
 ; ***************************************************************************
 ;
@@ -32,11 +38,18 @@ VIA_IER=$10e000
 	; port A bits of interest
 
 A_KBCLK=$02				; PS/2 keyboard clock (o/c)
+A_D8=$01				; D8 to AVC
 
 	; port B bits of interest
 
 B_XMIT=$80				; serial transmit output
 B_KBDATA=$40				; PS/2 keyboard data (o/c)
+B_PADCLK=$20				; controller clock
+B_PADLE=$10				; controller latch enable
+B_PAD4=$08				; controller 4 data
+B_PAD3=$04				; controller 3 data
+B_PAD2=$02				; controller 2 data
+B_PAD1=$01				; controller 1 data
 
 	; other bits of interest
 
@@ -45,57 +58,4 @@ IRQ_T1=$40
 IRQ_T2=$20				
 IRQ_CB2=$08
 
-; ***************************************************************************
-;
-; RAM storage
-
-; direct page
-; keep these where the 6502 did, $000000-$0000FF.
-
-		org $0
-
-scratch0:	bss 1			; general scratch use
-scratch1:	bss 1			
-
-vblk:		bss 1			; $FF/$00 = vertical blanking/not
-kbscan:		bss 1			; keyboard scan code
-
-	; FORTH
-
-rp:		bss 2			; RP: return stack pointer
-
-	; RS-232 
-
-recvc:		bss 1			; serial input shift register
-recvcnt:	bss 1			; bit counter for serial input
-recvbit:	bss 1			; receive bit state
-recvhd:		bss 2			; head of recvbuf (write ptr)
-recvtl:		bss 2			; tail of recvbuf (read ptr)
-
-	; XMODEM 
-
-xmaddr:		bss 2			; far pointer to buffer
-xmblkno:	bss 1			; expected block #
-xmretry:	bss 1			; retry counter
-xmctl:		bss 1			; either ACK or NAK
-
-	; CRC-16 routines
-
-crc:		bss 2			; 16-bit CRC accumulator
-
-; non direct-page storage
-
-		org $100
-
-stack:		bss 256			; stack's traditional location
-S0=.-1					; initial stack pointer value
-
-TIB=.					; FORTH terminal input buffer (TIB)
-rstack:		bss 256			; FORTH return stack
-R0=.-2					; initial RP value
-
-	; RS-232 receive buffer must be a full page,
-	; and must start at a page boundary.
-
-recvbuf:	bss 256			; RS-232 receive buffer
 
