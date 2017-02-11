@@ -1,15 +1,12 @@
 ; temp file used to quickly test PS/2 keyboard interface
 
-kbscan:		bss 1
+keyb_scan=$16
+chrout=$60008
 
+		org $70000
 
-
-		org $400
-
-		jmp $500
-
-		org $500
-
+		lda #>$f
+		jsr hexout
 
 1: 		lda <VIA_DDR_A		; release clock
 		and #>~A_KBCLK
@@ -19,31 +16,31 @@ kbscan:		bss 1
 
 ; XXX - check for proper start bit, error if not
 
-		stz >kbscan		; clear kbscan
+		stz >keyb_scan		; clear keyb_scan
 
 		jsr wait		; bit 0
-		ror >kbscan
+		ror >keyb_scan
 
 		jsr wait		; bit 1
-		ror >kbscan
+		ror >keyb_scan
 		
 		jsr wait		; bit 2
-		ror >kbscan
+		ror >keyb_scan
 		
 		jsr wait		; bit 3
-		ror >kbscan
+		ror >keyb_scan
 		
 		jsr wait		; bit 4
-		ror >kbscan
+		ror >keyb_scan
 		
 		jsr wait		; bit 5
-		ror >kbscan
+		ror >keyb_scan
 
 		jsr wait		; bit 6
-		ror >kbscan
+		ror >keyb_scan
 
 		jsr wait		; bit 7
-		ror >kbscan
+		ror >keyb_scan
 
 		jsr wait		; parity
 
@@ -57,13 +54,13 @@ kbscan:		bss 1
 		ora #>A_KBCLK
 		sta <VIA_DDR_A
 
-		lda >kbscan
+		lda >keyb_scan
 		lsr
 		lsr
 		lsr
 		lsr
 		jsr hexout
-		lda >kbscan
+		lda >keyb_scan
 		and #>$0f
 		jsr hexout
 
@@ -72,12 +69,13 @@ kbscan:		bss 1
 chars:		byte $30,$31,$32,$33,$34,$35,$36,$37
 		byte $38,$39,$41,$42,$43,$44,$45,$46
 
-hexout:		tax
+hexout:		xba
+		lda #>0
+		xba
+		tax
 		lda <chars,x
-		brk
-		byte 0
+		jsr <chrout
 		rts
-		
 
 wait:		lda <VIA_A		; wait for clock HIGH
 		bit #>A_KBCLK

@@ -1,7 +1,7 @@
 /*
  * Gamebox 65C816 Assembler
  *
- * Copyright (C) 2016 Charles E. Youse (charles@gameboxkit.com)
+ * Copyright (C) 2017 Charles E. Youse (charles@gameboxkit.com)
  *
  */
 

@@ -14,18 +14,17 @@ tileptr:	bss 2		; pointer to bloc data
 mapptr:		bss 2		; offset into map
 
 
-; other variables
-
-		org $100
-
-
 ; ****************************************************************************
 ;
 ; game entry point
 		
-		org $400
+		org $60000
 
 		sei		; mask interrupts
+
+		lda #>6 
+		pha
+		plb
 
 	; set up the tile palette
 	;

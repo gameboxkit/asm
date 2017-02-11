@@ -5,12 +5,15 @@
 MHZ=5000000			; 5MHz clock speed
 BAUD=9600			; serial baud rate
 
+TEXTFG=$FF      		; text foreground
+TEXTBG=$00      		; text background
+CURSBG=$E0      		; cursor background
+
 ; ***************************************************************************
 ;
 ; RAM storage
 
 ; direct page
-; keep these where the 6502 did, $000000-$0000FF.
 
 		org $0
 
@@ -27,7 +30,7 @@ recvtl:		bss 2			; tail of recvbuf (read ptr)
 
 	; XMODEM 
 
-xmaddr:		bss 2			; far pointer to buffer
+xmaddr:		bss 3			; far pointer to buffer
 xmblkno:	bss 1			; expected block #
 xmretry:	bss 1			; retry counter
 xmctl:		bss 1			; either ACK or NAK
@@ -36,56 +39,61 @@ xmctl:		bss 1			; either ACK or NAK
 
 crc:		bss 2			; 16-bit CRC accumulator
 
-; non direct-page storage
+	; TEXT module
 
+text_scratch:   bss 3           ; scratch locations for text module
+text_curs_x:     bss 1           ; cursor position
+text_curs_y:     bss 1           ; do not separate text_curs_x, text_curs_y
+text_map_y:     bss 1           ; map offset
+text_state:     bss 1           ; cursor state, do not split from map_y
+
+	; KEYB module
+
+keyb_scan:	bss 1		; keyboard scan code
+
+	; VBLANK stuff
+
+ticks:		bss 2		; blank in progress
+
+
+; low RAM storage
 
 		org $100
 
 stack:		bss 256			; stack's traditional location
 S0=.-1					; initial S value
+recvbuf:	bss 256			; RS-232 buffer; must be page-aligned
 
-	; RS-232 receive buffer must be a full page,
-	; and must start at a page boundary.
+; high RAM storage
 
-recvbuf:	bss 256			; RS-232 receive buffer
+                org $5fc00
 
+text_screen:    bss 40*25       ; shadow screen buffer
+text_space:     bss 1           ; keep $20 here to speed scroll up
 
-; ***************************************************************************
-;
-; vectors
-;
-
-	; bounce
-
-		org $ffd0
-
-irqvec:		jmp <irq
-sysvec:		jmp <sysenter
-resvec:		jmp <reset
-
-	; native
-
-		org $ffe0
-
-		word 0			; reserved
-		word 0			; reserved
-		word 0			; COP
-		word sysvec		; BRK
-		word 0 			; ABORT
-		word 0			; NMI
-		word 0 			; reserved
-		word irqvec		; IRQ
-
-	; emulation
-
-		org $fffc
-
-		word resvec		; RESET
+                bss 23          ; free for use!
 
 ; ***************************************************************************
 
+		org $60000
 
-		org $10000
+	; (temporary) redirection vectors
+
+		jmp text
+		nop
+
+		jmp cls
+		nop
+
+		jmp chrout	
+		nop
+
+		jmp hidecurs
+		nop
+
+		jmp showcurs
+		nop
+
 
 crclo: 	byte $00,$21,$42,$63,$84,$A5,$C6,$E7,$08,$29,$4A,$6B,$8C,$AD,$CE,$EF
 	byte $31,$10,$73,$52,$B5,$94,$F7,$D6,$39,$18,$7B,$5A,$BD,$9C,$FF,$DE
@@ -136,7 +144,12 @@ reset:		jmp <1f			; set PBR properly
 		lda #$ffff		; copy ROM to RAM
 		ldy #0
 		ldx #0	
-		mvn $0101		; top 64K
+		mvn $0707		; top 64K
+		mvn $0606		; bottom 64K
+
+		; we repeat the copy to get the vectors/etc.
+		; into the lower 64K and set the DBR properly.
+
 		mvn $0000		; bottom 64K, DBR=0
 
 		lda #0			; clear hidden accumulator
@@ -161,7 +174,7 @@ reset:		jmp <1f			; set PBR properly
 
 		lda #>$0		; no latching,
 		sta <VIA_ACR		; timer 1/2 are one-shots
-		lda #>$22		; independent, negative-edge
+		lda #>$26		; independent, CB2: neg, CA2: pos
 		sta <VIA_PCR		; triggers on CA/B 1/2
 
 		lda #>$7f		; disable all interrupts
@@ -173,6 +186,20 @@ reset:		jmp <1f			; set PBR properly
 		jsr recvflush
 		jsr recvidle		; initialize RS-232 to idle
 
+	; Initialize display.
+
+		jsr <text
+		jsr <cls
+
+		lda #>$47		; "GO"
+		jsr <chrout
+		lda #>$4f
+		jsr <chrout
+		lda #>$0d
+		jsr <chrout
+
+		jsr <showcurs
+
 	; Done.  Enable interrupts.
 
 		cli
@@ -180,22 +207,11 @@ reset:		jmp <1f			; set PBR properly
 ; receive xmodem file
 
 1:		jsr xmdrain
-		lda #>$0d		; "GO"
-		jsr xmit
-		lda #>$0a		; "GO"
-		jsr xmit
-		lda #>$47		; "GO"
-		jsr xmit
-		lda #>$4f
-		jsr xmit
-		lda #>$0d		; "GO"
-		jsr xmit
-		lda #>$0a		; "GO"
-		jsr xmit
 
-		stz >xmaddr		; target = $400
-		lda #>$04
-		sta >xmaddr+1
+		stz >xmaddr		; target = $70000
+		stz >xmaddr+1		
+		lda #>$07
+		sta >xmaddr+2
 		jsr xmodem_receive
 		bcs >1b			; did not work
 
@@ -207,7 +223,8 @@ reset:		jmp <1f			; set PBR properly
 
 	; and jump to that code
 
-		jmp <$400
+		sei			; disable interrupts
+		jmp <$70000		; jump to new code
 
 ; ***************************************************************************
 ;
@@ -271,7 +288,7 @@ xmodem_receive:	lda #>$01		; start block is $01
 		sty >crc		; init CRC-16
 4:		jsr xmrecv		; get byte
 		bcs >7f			
-		sta (>xmaddr),y		; write byte to buffer
+		sta [>xmaddr],y		; write byte to buffer
 		jsr updcrc		; update CRC-16
 		iny			; next byte
 		cpy #128		; are we done?
@@ -433,9 +450,13 @@ xmit:		sta >scratch0
 ; CRC-16 calculation routines
 ; 
 ; updates direct-page 'crc' variable with the byte in A.
-; XXX - assumes B (hidden accumulator) is zero!
 
 updcrc:		phx
+
+		xba		; need high byte to be 0
+		lda #>0
+		xba
+
 		eor >crc+1 	
        		tax
        		lda >crc	
@@ -446,7 +467,7 @@ updcrc:		phx
 		plx
        		rts
 
-IRQ_LATENCY=42				; IRQ latency - see below
+IRQ_LATENCY=50				; IRQ latency - see below
 STABLE_DELAY=BIT_DELAY-IRQ_LATENCY	; sample delay after timeout
 TRANS_DELAY=BIT_DELAY+BIT_DELAY/2	; sample delay after transition
 
@@ -454,22 +475,72 @@ irq: 		sep #>%00100000		; 8-bit accumulator
 		pha
 
 		lda <VIA_IFR		; identify source
-		bit #>IRQ_CB2		; CB2 transition?
+
+		bit #>IRQ_CB2		; CB2 transition (RX)?
+		bne >6f			; yes, go
+
+		bit #>IRQ_CA2		; CA2 transition (VBLANK)?
+		beq >5f			; nope, go around
+
+	; VBLANK
+
+		lda #>IRQ_CA2		; acknowledge interrupt
+		sta <VIA_IFR
+
+		inc >ticks		; bump tick counter
 		bne >1f
+		inc >ticks+1
 
-	; if it's not a CB2 transition, we assume Timer 1 expired.
-	; this might not be a good assumption for long.
+1:		lda >text_state		; are we in text mode?
+		bmi >2f			; yes, go deal with cursor
+		pla			; nope, we're done
+		rti
 
-		lda #>STABLE_DELAY	; set Timer 1 for 1 bit time
+		; blink cursor
+
+2:		lda <VIA_A		; save interrupted D[8] state
+		pha 
+
+		and #>~A_D8		; default: not visible
+		pha			
+		
+		lda >ticks		; check ticks against
+		and #>$7f		; cursor blink bits
+		and >text_state
+		beq >3f			; if 0, cursor is off
+
+		pla
+		ora #>A_D8		; cursor on
+		pha
+
+3:		pla
+		sta <VIA_A
+
+		lda >text_curs_y
+		asl			
+		asl
+		asl
+		sta <AVC_BLOCKS+1	; sprite 0: Y_OFS + VISIBLE
+
+		pla			; restore previous D[8]
+		sta <VIA_A
+
+		pla			; and NOW we're done
+		rti
+
+
+	; RS232 - timer 1 expired
+
+5:		lda #>STABLE_DELAY	; set Timer 1 for 1 bit time
 		sta <VIA_T1CL		; (this also clears the interrupt)
 		lda #>STABLE_DELAY/$100
 		sta <VIA_T1CH				
-		bra >2f			; IRQ_LATENCY measures to this point!
+		bra >7f			; IRQ_LATENCY measures to this point!
 					; N.B. don't forget 4~ bounce vector
 
-	; CB2 transition, bit state changed.
+	; RS232 - CB2 transition, bit state changed.
 
-1:		lda #>TRANS_DELAY	; set Timer 1 for 1.5 bit times
+6:		lda #>TRANS_DELAY	; set Timer 1 for 1.5 bit times
 		sta <VIA_T1CL
 		lda #>TRANS_DELAY/$100
 		sta <VIA_T1CH
@@ -489,7 +560,7 @@ irq: 		sep #>%00100000		; 8-bit accumulator
 
 	; both paths converge here.
 
-2:		inc >recvcnt		; bump state machine
+7:		inc >recvcnt		; bump state machine
 		beq >9f			; recvcnt=0 is start bit (done)
 
 		lda >recvbit		; get current bit state
@@ -538,86 +609,446 @@ recvidle:	lda #>IRQ_T1		; disable Timer 1 interrupts
 
 ; ***************************************************************************
 ;
-; system calls (invoked by BRK)
+; TEXT module
 ;
-; On system entry, it's assumed that PBR=DBR=D=0.
-; The byte following the BRK instruction is the system call number.
+; Handles management of the screen in 40x25 "text" mode.
 ;
-; The stack frame is set up as follows:
+; Public entry points 
 ;
-;	10,S	caller PBR		assumed to always be 0!
-;	8,S	caller PC
-;	7,S	caller P
-;	5,S	caller A		all user registers are
-; 	3,S	caller X		saved as 16-bit
-;	1,S	caller Y		regardless of their state on entry
-; 
-; System call entry points may assume 16-bit registers, and
-; the high byte of the accumulator is 0.
+; 	TEXT: reset system to text mode
+; 	CLS: clear screen and home cursor 
+; 	SHOWCURS: display cursor 
+; 	HIDECURS: hide cursor 
+; 	CHROUT: put character on screen (A = 7-bit character to print)
+;
 
-REG_Y=1
-REG_X=3
-REG_A=5
-REG_P=7
-REG_PC=8
-REG_PBR=10
-
-sysenter:	rep #>%00110100		; 16-bit registers, enable IRQ
-		pha
-		phx
+text:		phb
 		phy
+		phx
+		pha
+		php
+		
+		sep #>%00100000         ; 8-bit 
 
-		lda >REG_PC,s		; retrieve BRK + post byte
-		dec
-		dec
-		tax
-		lda >0,x
-		xba			; A = system call #
-		cmp #NR_SYS		; valid call?
-		bcs >syserr		; nope, branch
-		asl			; A is now offset into 'syscalls'
-		tax
-		jmp (syscalls,x)	; go!
+		lda #>$20
+		sta <text_space
 
+		lda #>0			
+		sta <AVC_MAP_X
+		sta <AVC_MAP_Y
 
-syserr:		lda >REG_P,s		; set carry (error)
-		ora #1
-		sta >REG_P,s
-		bra >sysexit
+		; set up default palette
 
-sysok:		lda >REG_P,s		; clear carry, (no error)
-		and #$fffe
-		sta >REG_P,s
-sysexit:	ply
-		plx
+		ldx #0			; default palette (identity mapping)
+1:		sta <AVC_PALETTE,x	; 
+		inc
+		inx
+		cpx #256*4
+		bne >1b
+
+		; load font into tiles
+
+		lda #>text_font/65536	; DBR = text_font's bank
+		pha
+		plb
+
+		lda #>TEXTBG		; load font 0-127 w/normal colors
+		sta >text_scratch+1
+		ldx #0
+		jsr 1f
+		lda #>CURSBG		; repeat to 127-255 w/cursor colors
+		sta >text_scratch+1
+		jsr 1f
+
+		; sync screen with shadow buffer
+		
+		rep #>%00100000		; 16-bit 
+		jsr text_redraw
+
+		plp
 		pla
-		rti
+		plx
+		ply
+		plb
+		rtl
 
-	; system call table
+	; subroutine that loads bitmap font
+
+1: 		ldy #0
+2:		lda text_font,y
+		sta >text_scratch
+		lda #>8
+3:		pha
+		lda #>TEXTFG
+		rol >text_scratch
+		bcs >4f
+		lda >text_scratch+1
+4:		sta <AVC_TILES,x
+		inx
+		pla
+		dec
+		bne >3b
+		iny
+		cpy #text_fontsz
+		bne >2b
+		rts
+	
+	; text_redraw redraws the tile map
+	; using the shadow text_screen data
+
+	; expects 16-bit accumulator on entry;
+	; trashes DBR
+
+text_redraw:	ldx #text_screen
+		ldy #AVC_MAP
+1:		lda #39					; 40 columns to move
+		mvn text_screen/65536*256+AVC_MAP/65536	; move!
+		cpx #text_space				; end of screen?
+		beq >2f					; branch if so
+		tya					; bump map ptr
+		clc					; to skip unused cols
+		adc #24
+		tay
+		bra >1b
+2:		rts
+
+cls:		pha
+		phb
+		php
+	
+		lda #>$20				; pilot space
+		sta <text_screen
+
+		rep #>%00100000				; 16-bit acc
+		ldx #text_screen
+		ldy #text_screen+1
+		lda #40*25-2
+		mvn text_screen/65536*256+text_screen/65536	; fill 
+
+		jsr text_redraw		; mirror to actual screen
+
+		stz >text_curs_x		; home cursor (clears text_curs_y too)
+
+		plp
+		plb
+		pla
+		rtl
+
+showcurs:	pha				
+		php
+		sep #>%00100000			; 8-bit
+		lda #>$80			; cursor ON
+		bra >1f
+
+hidecurs:	pha			
+		php
+		sep #>%00100000			; 8-bit
+		lda #>0
+
+1:		pha				; save on/off flag
+		jsr text_scrcurs		; get character at cursor
+		lda [>text_scratch]
+		ora >1,s			; apply cursor bit (if set)
+		jsr text_mapcurs		; compute cursor map addr
+		sta [>text_scratch]
+		pla				; remove flag from stack
+
+		plp
+		pla
+		rtl
+
+chrout:		pha
+		php
+		phb
+
+		jsr <hidecurs
+
+		sep #>%00100000			; 8-bit
+
+		and #>$7f			; strip high bit
+
+		; CHR$(8)		
+		
+		cmp #>$08			; backspace?
+		bne >1f
+		dec >text_curs_x			; move back one space
+		bpl >9f				; if not negative, we're done
+		lda #>39			; move to end of previous line
+		sta >text_curs_x
+		dec >text_curs_y
+		bpl >9f				; if still on screen, we're done
+		stz >text_curs_x			; too far..
+		stz >text_curs_y			; just home the cursor
+		bra >9f				; and that's all
+
+		; CHR$(13)
+
+1:		cmp #>$0d			; carriage return?
+		bne >1f				; nope
+		stz >text_curs_x			; cursor to left
+		inc >text_curs_y			; cursor down
+		bra >8f				; check for scroll
+
+		; CHR$(12)
+
+1:		cmp #>$0c			; formfeed?
+		bne >1f
+		jsr <cls			; clear screen
+		bra >9f
+
+		; errbody else
+
+1:		jsr text_scrcurs		; save in shadow RAM
+		sta [>text_scratch]
+		jsr text_mapcurs		; write to tile MAP
+		sta [>text_scratch]
+
+		; now update the cursor position
+
+		inc >text_curs_x			; move right
+		lda >text_curs_x		
+		cmp #>40			; end of line?
+		bne >9f				; nope, we're done
+
+		stz >text_curs_x			; beginning of line
+		inc >text_curs_y			; move down
+
+		; check for scroll
+
+8:		lda >text_curs_y
+		cmp #>25			; end of screen?
+		bne >9f				; nope, we're done
+
+		; scroll up
+
+		dec >text_curs_y			; move back up
+
+		rep #>%00100000			; 16-bit acc
+		ldx #text_screen+40		; start at second line
+		ldy #text_screen		; move to first line
+		lda #40*24			; 24 rows (+1 .. text_space)
+		mvn text_screen/65536*256+text_screen/65536	; move
+
+		ldx #text_space-40		; fill last line with spaces
+		ldy #text_space-39
+		lda #38
+		mvn text_screen/65536*256+text_screen/65536	; move
+
+		jsr text_redraw
+
+9:		plb
+		plp
+		pla
+
+		rtl
+
+	; compute the screen (shadow RAM) address of
+	; the cursor position to text_scratch 
 	;
-	; system calls can assume 16-bit registers,
-	; and the high byte of A is zero.
+	; assumes 8-bit mode on entry
+	; all registers preserved
 
-syscalls:	word sys_emit
-		word sys_key
 
-SZ_SYS=.-syscalls		; size of system call table
-NR_SYS=SZ_SYS/2			; number of system calls
+text_scrcurs:	pha
+		php
 
-	; EMIT: write a character (in A) to console
+		lda #>text_screen/65536	; screen bank
+		sta >text_scratch+2
 
-sys_emit:	sep #>%00100000		; 8-bit accumulator
-		lda >REG_A,s		; byte to send
-		jsr xmit
-		rep #>%00100000		; 16-bit accumulator
-		jmp sysok
+		rep #>%00100000         ; 16-bit accumulator
 
-	; KEY: return next console input in A
+		; text_scratch = text_screen + 40(text_curs_y)
 
-sys_key:	sep #>%00100000		; 8-bit accumulator
-1:		jsr recv		; get input
-		bcs >1b			; loop if nothing
-		rep #>%00100000		; 16-bit accumulator
-		sta >REG_A,s
-		jmp sysok
+		lda >text_curs_y
+		and #$00ff		; clear out junk
+
+		asl			; A = text_curs_y * 32
+		asl
+		asl
+		asl
+		asl
+		sta >text_scratch
+
+		lda >text_curs_y
+		and #$00ff
+
+		asl			; A = text_curs_y * 8
+		asl
+		asl
+
+		clc		
+		adc >text_scratch
+		adc #text_screen
+
+		bra >1f			; merge tail with text_mapcurs
+
+	; compute the tile map address of
+	; the cursor position to text_scratch
+
+text_mapcurs:	pha
+		php
+
+		lda #>AVC_MAP/65536	; screen bank
+		sta >text_scratch+2
+
+		rep #>%00100000         ; 16-bit accumulator
+
+		; text_scratch = AVC_MAP + 64(text_curs_y) + text_curs_x
+
+		lda >text_curs_y
+		and #$00ff		; clear out junk
+
+		asl			; A = text_curs_y * 64
+		asl
+		asl
+		asl
+		asl
+		asl
+
+		clc
+		adc #AVC_MAP
+
+1:		sta >text_scratch		; add in X offset
+		lda >text_curs_x
+		and #$00ff
+		adc >text_scratch
+		sta >text_scratch
+
+		plp
+		pla
+		rts
+
+text_font:	bss 32*8
+
+		byte $00,$00,$00,$00,$00,$00,$00,$00 ; (32)  
+		byte $10,$10,$10,$10,$10,$00,$10,$00 ; (33) !
+		byte $28,$28,$28,$00,$00,$00,$00,$00 ; (34) "
+		byte $28,$28,$7c,$28,$7c,$28,$28,$00 ; (35) #
+		byte $10,$3c,$50,$38,$14,$78,$10,$00 ; (36) $
+		byte $60,$64,$08,$10,$20,$4c,$0c,$00 ; (37) %
+		byte $30,$48,$50,$20,$54,$48,$34,$00 ; (38) &
+		byte $30,$10,$20,$00,$00,$00,$00,$00 ; (39) '
+		byte $08,$10,$20,$20,$20,$10,$08,$00 ; (40) (
+		byte $20,$10,$08,$08,$08,$10,$20,$00 ; (41) )
+		byte $00,$28,$10,$7c,$10,$28,$00,$00 ; (42) *
+		byte $00,$10,$10,$7c,$10,$10,$00,$00 ; (43) +
+		byte $00,$00,$00,$00,$30,$10,$20,$00 ; (44) ,
+		byte $00,$00,$00,$7c,$00,$00,$00,$00 ; (45) -
+		byte $00,$00,$00,$00,$00,$30,$30,$00 ; (46) .
+		byte $00,$04,$08,$10,$20,$40,$00,$00 ; (47) /
+		byte $38,$44,$4c,$54,$64,$44,$38,$00 ; (48) 0
+		byte $10,$30,$10,$10,$10,$10,$38,$00 ; (49) 1
+		byte $38,$44,$04,$08,$10,$20,$7c,$00 ; (50) 2
+		byte $7c,$08,$10,$08,$04,$44,$38,$00 ; (51) 3
+		byte $08,$18,$28,$48,$7c,$08,$08,$00 ; (52) 4
+		byte $7c,$40,$78,$04,$04,$44,$38,$00 ; (53) 5
+		byte $18,$20,$40,$78,$44,$44,$38,$00 ; (54) 6
+		byte $7c,$04,$08,$10,$20,$20,$20,$00 ; (55) 7
+		byte $38,$44,$44,$38,$44,$44,$38,$00 ; (56) 8
+		byte $38,$44,$44,$3c,$04,$08,$30,$00 ; (57) 9
+		byte $00,$30,$30,$00,$30,$30,$00,$00 ; (58) :
+		byte $00,$30,$30,$00,$30,$10,$20,$00 ; (59) ;
+		byte $04,$08,$10,$20,$10,$08,$04,$00 ; (60) <
+		byte $00,$00,$7c,$00,$7c,$00,$00,$00 ; (61) =
+		byte $40,$20,$10,$08,$10,$20,$40,$00 ; (62) >
+		byte $38,$44,$04,$08,$10,$00,$10,$00 ; (63) ?
+		byte $38,$44,$04,$34,$54,$54,$38,$00 ; (64) @
+		byte $38,$44,$44,$44,$7c,$44,$44,$00 ; (65) A
+		byte $78,$44,$44,$78,$44,$44,$78,$00 ; (66) B
+		byte $38,$44,$40,$40,$40,$44,$38,$00 ; (67) C
+		byte $70,$48,$44,$44,$44,$48,$70,$00 ; (68) D
+		byte $7c,$40,$40,$78,$40,$40,$7c,$00 ; (69) E
+		byte $7c,$40,$40,$70,$40,$40,$40,$00 ; (70) F
+		byte $38,$44,$40,$40,$4c,$44,$38,$00 ; (71) G
+		byte $44,$44,$44,$7c,$44,$44,$44,$00 ; (72) H
+		byte $38,$10,$10,$10,$10,$10,$38,$00 ; (73) I
+		byte $1c,$08,$08,$08,$08,$48,$30,$00 ; (74) J
+		byte $44,$48,$50,$60,$50,$48,$44,$00 ; (75) K
+		byte $40,$40,$40,$40,$40,$40,$7c,$00 ; (76) L
+		byte $44,$6c,$54,$44,$44,$44,$44,$00 ; (77) M
+		byte $44,$44,$64,$54,$4c,$44,$44,$00 ; (78) N
+		byte $38,$44,$44,$44,$44,$44,$38,$00 ; (79) O
+		byte $78,$44,$44,$78,$40,$40,$40,$00 ; (80) P
+		byte $38,$44,$44,$44,$54,$48,$34,$00 ; (81) Q
+		byte $78,$44,$44,$78,$50,$48,$44,$00 ; (82) R
+		byte $3c,$40,$40,$38,$04,$04,$78,$00 ; (83) S
+		byte $7c,$10,$10,$10,$10,$10,$10,$00 ; (84) T
+		byte $44,$44,$44,$44,$44,$44,$38,$00 ; (85) U
+		byte $44,$44,$44,$44,$44,$28,$10,$00 ; (86) V
+		byte $44,$44,$44,$54,$54,$6c,$44,$00 ; (87) W
+		byte $44,$44,$28,$10,$28,$44,$44,$00 ; (88) X
+		byte $44,$44,$28,$10,$10,$10,$10,$00 ; (89) Y
+		byte $7c,$04,$08,$10,$20,$40,$7c,$00 ; (90) Z
+		byte $1c,$10,$10,$10,$10,$10,$1c,$00 ; (91) [
+		byte $00,$40,$20,$10,$08,$04,$00,$00 ; (92) \
+		byte $70,$10,$10,$10,$10,$10,$70,$00 ; (93) ]
+		byte $10,$28,$44,$00,$00,$00,$00,$00 ; (94) ^
+		byte $00,$00,$00,$00,$00,$00,$7c,$00 ; (95) _
+		byte $20,$10,$08,$00,$00,$00,$00,$00 ; (96) `
+		byte $00,$00,$38,$04,$3c,$44,$3c,$00 ; (97) a
+		byte $40,$40,$58,$64,$44,$44,$78,$00 ; (98) b
+		byte $00,$00,$38,$40,$40,$44,$38,$00 ; (99) c
+		byte $04,$04,$34,$4c,$44,$44,$3c,$00 ; (100) d
+		byte $00,$00,$38,$44,$7c,$40,$38,$00 ; (101) e
+		byte $18,$24,$20,$70,$20,$20,$20,$00 ; (102) f
+		byte $00,$00,$3c,$44,$3c,$04,$18,$00 ; (103) g
+		byte $40,$40,$58,$64,$44,$44,$44,$00 ; (104) h
+		byte $10,$00,$30,$10,$10,$10,$38,$00 ; (105) i
+		byte $08,$00,$18,$08,$08,$48,$30,$00 ; (106) j
+		byte $20,$20,$24,$28,$30,$28,$24,$00 ; (107) k
+		byte $30,$10,$10,$10,$10,$10,$38,$00 ; (108) l
+		byte $00,$00,$68,$54,$54,$44,$44,$00 ; (109) m
+		byte $00,$00,$58,$64,$44,$44,$44,$00 ; (110) n
+		byte $00,$00,$38,$44,$44,$44,$38,$00 ; (111) o
+		byte $00,$00,$78,$44,$78,$40,$40,$00 ; (112) p
+		byte $00,$00,$34,$4c,$3c,$04,$04,$00 ; (113) q
+		byte $00,$00,$58,$64,$40,$40,$40,$00 ; (114) r
+		byte $00,$00,$38,$40,$38,$04,$78,$00 ; (115) s
+		byte $20,$20,$70,$20,$20,$24,$18,$00 ; (116) t
+		byte $00,$00,$44,$44,$44,$4c,$34,$00 ; (117) u
+		byte $00,$00,$44,$44,$44,$28,$10,$00 ; (118) v
+		byte $00,$00,$44,$44,$54,$54,$28,$00 ; (119) w
+		byte $00,$00,$44,$28,$10,$28,$44,$00 ; (120) x
+		byte $00,$00,$44,$44,$3c,$04,$38,$00 ; (121) y
+		byte $00,$00,$7c,$08,$10,$20,$7c,$00 ; (122) z
+		byte $08,$10,$10,$20,$10,$10,$08,$00 ; (123) {
+		byte $10,$10,$10,$10,$10,$10,$10,$00 ; (124) |
+		byte $20,$10,$10,$08,$10,$10,$20,$00 ; (125) }
+		byte $00,$10,$08,$7c,$08,$10,$00,$00 ; (126) ~
+		byte $00,$10,$20,$7c,$20,$10,$00,$00 ; (127)
+
+text_fontsz=.-text_font
+
+; ***************************************************************************
+;
+; vectors
+;
+
+	; bounce
+
+		org $6ffd0
+
+irqvec:		jmp <irq
+resvec:		jmp <reset
+
+	; native
+
+		org $6ffe0
+
+		word 0			; reserved
+		word 0			; reserved
+		word 0			; COP
+		word 0			; BRK
+		word 0 			; ABORT
+		word 0			; NMI
+		word 0 			; reserved
+		word irqvec		; IRQ
+
+	; emulation
+
+		org $6fffc
+
+		word resvec		; RESET
+
+
 
