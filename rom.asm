@@ -54,6 +54,11 @@ text_blink:	bss 1           ; cursor state, do not split from map_y
 
 frames:		bss 2		; frame counter
 
+	; keyboard stuff
+
+kbd_shift:	bss 1		; shift state
+kbd_state:	bss 1		; keyboard state
+
 
 ; low RAM storage
 
@@ -989,6 +994,18 @@ resvec:		jmp <reset
 
 ; ***************************************************************************
 
+KBD_LCTRL=$80		; kbd_shift
+KBD_RCTRL=$40
+KBD_LSHFT=$20
+KBD_RSHFT=$10
+KBD_LALT=$08
+KBD_RALT=$04
+KBD_CAPS=$02
+KBD_NUM=$01
+
+KBD_BREAK=$80		; kbd_state
+KBD_E0=$40		
+KBD_E1=$20
 
 		org $70000
 
@@ -999,20 +1016,33 @@ resvec:		jmp <reset
 		and #>~A_KBCLK
 		sta <VIA_DDR_A
 
-1:		jsr keyb_scan
+		stz >kbd_shift
+		stz >kbd_state
+
+1:		jsr kbd_scan
+		bcs >1b
+		lda #>$2e
+		jsr <chrout
 		bra >1b
 
+	; wait for key from keyboard,
+	; 
 
-	; read keyboard
+
+polcat:		
+
+	; read keyboard scan code
 	;
 	; carry clear means A holds scan code
 	; carry set means keyboard timeout or error
+	;
+	; x, scratch0-2 destroyed
 
-keyb_scan: 	lda <VIA_DDR_A		; release clock
+kbd_scan: 	lda <VIA_DDR_A		; release clock
 		and #>~A_KBCLK
 		sta <VIA_DDR_A
 
-		jsr keyb_bit		; get start bit
+		jsr kbd_bit		; get start bit
 		bcc >2f
 
 1:		; error exit
@@ -1030,7 +1060,7 @@ keyb_scan: 	lda <VIA_DDR_A		; release clock
 		stz >scratch		; clear scratch (scan code)
 		stz >scratch+2		; clear parity counter
 		ldx #8			; read eight bits
-3:		jsr keyb_bit		; get next bit from keyboard
+3:		jsr kbd_bit		; get next bit from keyboard
 		bcs >1b			; carry? error exit.
 		beq >4f			; if 0, go ROR with C=0
 		inc >scratch+2		; bump parity counter
@@ -1042,37 +1072,36 @@ keyb_scan: 	lda <VIA_DDR_A		; release clock
 		; got the scan code
 		; now get the parity bit
 
-		jsr keyb_bit		; parity bit
+		jsr kbd_bit		; parity bit
+		bcs >1b			; carry - error
+		beq >5f			; skip if zero
+		inc >scratch+2		; bump parity
+5:		lda >scratch+2		; check parity
+		bit #>$01		; should be odd
+		beq >1b			; parity error
 
-; XXX - check proper parity
+		; stop bit 
 
-		jsr keyb_bit		; stop bit
+		jsr kbd_bit		; stop bit
+		bcs >1b			; carry - error
+		beq >1b			; stop bit must be 1, else error
 
-; XXX - check for proper stop bit, error if not
+		; that's it, all 11 bits check
 
 		lda <VIA_DDR_A		; inhibit clock
 		ora #>A_KBCLK
 		sta <VIA_DDR_A
 
 		lda >scratch
-		pha
-		lsr
-		lsr
-		lsr
-		lsr
-		jsr hexout
-		pla
-		and #>$0f
-		jsr hexout
-
+		clc
 		rts
 
 	; get bit from keyboard
 	; carry set on error/timeout, zero flag contains input bit
 	;
-	; destroys A, scratch+1
+	; destroys a, scratch+1
 
-keyb_bit:	lda >frames
+kbd_bit:	lda >frames
 		inc			; two frames in the future
 		inc
 		sta >scratch+1		; timeout
