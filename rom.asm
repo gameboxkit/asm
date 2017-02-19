@@ -801,6 +801,428 @@ text_font:	bss 32*8
 text_fontsz=.-text_font
 
 ; ***************************************************************************
+;
+; KEYB module
+;
+; Handles keyboard input.
+;
+; 	INKEY: return next key read from keyboard in A
+;
+
+KBD_LCTRL=$80		; kbd_shift
+KBD_RCTRL=$40
+KBD_LSHFT=$20
+KBD_RSHFT=$10
+KBD_LALT=$08
+KBD_RALT=$04
+KBD_CAPSLOCK=$02
+KBD_NUMLOCK=$01
+
+KBD_BREAK=$80		; kbd_state
+KBD_E0=$40		
+KBD_E1=$20
+
+	; INKEY
+
+inkey:		phx			; save regs
+		phb		
+
+		lda #>kbd_map/65536	; proper data bank
+		pha
+		plb
+
+inkey0:		stz >kbd_state	
+
+2:		jsr kbd_scan		; wait for scan code
+		bcs >2b
+
+		; process state changes
+		
+		cmp #>$f0		; break code
+		bne >3f
+		lda #>KBD_BREAK
+		bra >4f
+
+3:		cmp #>$e0		; extended 0
+		bne >3f
+		lda #>KBD_E0
+		bra >4f
+
+3:		cmp #>$e1		; extended 1
+		bne >5f
+		lda #>KBD_E1
+4:		ora >kbd_state
+		sta >kbd_state
+		bra >2b
+
+		; not a state change, we have a key code
+
+5:		pha			; stack scan code
+
+		; ignore all codes with an $E1 prefix
+
+		lda >kbd_state
+		bit #>KBD_E1		
+		beq >2f			
+		
+		pla			; discard
+		bra >inkey0		; restart
+
+		; first, look for "interesting" break codes
+
+2:		bit #>KBD_BREAK
+		beq >4f
+
+		ldx #kbd_shiftkey
+		bit #>KBD_E0
+		beq >2f
+		ldx #kbd_shiftkey0
+2: 		pla			; retrieve scan code
+		jsr kbd_xlat
+		bcs >inkey0		; carry set means no match
+		eor #>$ff		; bit -> mask
+		and >kbd_shift		; mask off bit
+		sta >kbd_shift
+		bra >inkey0
+		
+		; make codes come here
+
+		; first look for shift keys
+
+4:		ldx #kbd_shiftkey
+		bit #>KBD_E0
+		beq >4f
+		ldx #kbd_shiftkey0
+4:		pla			; scan code
+		jsr kbd_xlat
+		bcs >5f			; no match, not a shift key
+		ora >kbd_shift		; change shift status
+		sta >kbd_shift
+		bra >inkey0
+
+		; not a shift key, look for lock keys
+
+5:		cmp #>$58		; CAPS LOCK?
+		bne >5f
+		lda #>KBD_CAPSLOCK
+		bra >6f
+5:		cmp #>$77		; NUM LOCK?
+		bne >7f			
+		lda #>KBD_NUMLOCK
+6:		eor >kbd_shift		; toggle
+		sta >kbd_shift
+		bra >inkey0
+
+inkey1:		bra >inkey0
+
+		; not a special key, normal processing here
+
+7: 		pha			; save scan code again
+
+		ldx #kbd_map
+		lda >kbd_state
+		bit #>KBD_E0	
+		beq >2f
+		ldx #kbd_map0
+2:		pla
+		jsr kbd_xlat
+		bcs >inkey1		; ignore if no match
+
+		; ok, we have a valid key
+		; run it through the filters
+
+2:		pha			; stack code
+
+		; shift filter
+
+		lda >kbd_shift
+		bit #>KBD_LSHFT+KBD_RSHFT
+		beq >3f
+		pla
+		ldx #kbd_shifted
+		jsr kbd_xlat
+		bcs >inkey1		; ignore if no shifted version
+		pha
+
+		; ctrl, alt, caps filters 
+		; work only on alpha characters
+
+3:		pla
+		pha
+
+		and #>$df		; force uppercase
+		cmp #>$41		; A
+		bcc >6f			; too low, skip these filters
+		cmp #>$5b		; Z+1
+		bcs >6f			; too high, skip these filters
+
+		; ctrl filter
+
+		lda >kbd_shift
+		bit #>KBD_LCTRL+KBD_RCTRL
+		beq >4f
+		pla
+		and #>$1f
+		pha
+
+		; alt filter
+
+4:		lda >kbd_shift
+		bit #>KBD_LALT+KBD_RALT
+		beq >5f
+		pla
+		and #>$df
+		ora #>$80
+		pha
+
+		; caps lock
+
+5:		lda >kbd_shift
+		bit #>KBD_CAPSLOCK
+		beq >6f
+		pla
+		eor #>$20
+		pha
+
+		; num lock
+
+6:		pla
+		pha
+
+		cmp #>$e0
+		bcc >7f
+
+		lda >kbd_shift
+		bit #>KBD_NUMLOCK
+		beq >7f
+
+		pla
+		eor #>$10
+		pha
+
+		; normalization
+
+7:		pla
+		ldx #kbd_normalize
+		jsr kbd_xlat
+
+9:		plb
+		plx
+		rtl
+		
+	; Entry:
+	; 	X = points to translation table
+	; 	A = code to translate
+	;
+	; Exit:
+	; 	A = resulting code
+	; 	carry clear if match, set if no match
+
+kbd_xlat:	
+
+1:		pha
+		lda 0,x		; check for end of table
+		bne >2f		
+
+		; end of table
+		
+		pla		; return original code
+		sec		; carry set = no match
+		rts
+
+		; not end of table, check value
+
+2:		pla		; retrieve code
+		cmp 0,x
+		beq >3f
+
+		; no match, next entry
+
+		inx
+		inx
+		bra >1b
+
+		; matched, return translated value
+
+3:		lda 1,x		; translated code
+		clc		; carry clear = matched
+		rts
+
+	; read keyboard scan code
+	;
+	; carry clear means A holds scan code
+	; carry set means keyboard timeout or error
+	;
+	; x, scratch0-2 destroyed
+
+kbd_scan: 	lda <VIA_DDR_A		; release clock
+		and #>~A_KBCLK
+		sta <VIA_DDR_A
+
+		jsr kbd_bit		; get start bit
+		bcc >2f
+
+1:		; error exit
+
+		lda <VIA_DDR_A		; inhibit clock
+		ora #>A_KBCLK
+		sta <VIA_DDR_A
+		sec
+		rts
+
+2:		bne >1b			; error if start bit not 0
+
+		; got a start bit, let's read a scan code
+
+		stz >scratch		; clear scratch (scan code)
+		stz >scratch+2		; clear parity counter
+		ldx #8			; read eight bits
+3:		jsr kbd_bit		; get next bit from keyboard
+		bcs >1b			; carry? error exit.
+		beq >4f			; if 0, go ROR with C=0
+		inc >scratch+2		; bump parity counter
+		sec			; it was a 1
+4: 		ror >scratch
+		dex			; one less bit
+		bne >3b			; not done yet
+
+		; got the scan code
+		; now get the parity bit
+
+		jsr kbd_bit		; parity bit
+		bcs >1b			; carry - error
+		beq >5f			; skip if zero
+		inc >scratch+2		; bump parity
+5:		lda >scratch+2		; check parity
+		bit #>$01		; should be odd
+		beq >1b			; parity error
+
+		; stop bit 
+
+		jsr kbd_bit		; stop bit
+		bcs >1b			; carry - error
+		beq >1b			; stop bit must be 1, else error
+
+		; that's it, all 11 bits check
+
+		lda <VIA_DDR_A		; inhibit clock
+		ora #>A_KBCLK
+		sta <VIA_DDR_A
+
+		lda >scratch
+		clc
+		rts
+
+	; get bit from keyboard
+	; carry set on error/timeout, zero flag contains input bit
+	;
+	; destroys a, scratch+1
+
+kbd_bit:	lda >frames
+		inc			; two frames in the future
+		inc
+		sta >scratch+1		; timeout
+
+1:		lda <VIA_A		; wait for clock HIGH
+		bit #>A_KBCLK
+		bne >3f			; it's high, continue
+		lda >frames		; not high yet, check timeout
+		cmp >scratch+1		
+		bne >1b			; no timeout, loop around
+2:		sec			; timeout, set carry
+		rts			; and return
+
+3:		lda <VIA_A		; wait for clock LO
+		bit #>A_KBCLK		
+		beq >4f			; clock is low, continue
+		lda >frames		; not low yet, check timeout
+		cmp >scratch+1
+		bne >3b			; nope, loop
+		bra >2b			; error
+	
+4:		lda <VIA_B		; read data
+		bit #>B_KBDATA		; set Z flag based on data
+		clc
+		rts
+
+kbd_shiftkey:	byte $12,KBD_LSHFT
+		byte $14,KBD_LCTRL
+		byte $11,KBD_LALT
+		byte $59,KBD_RSHFT
+		byte 0
+
+kbd_shiftkey0:	byte $14,KBD_RCTRL
+		byte $11,KBD_RALT
+		byte 0
+
+kbd_shifted:	byte $61,$41,$62,$42,$63,$43,$64,$44,$65,$45	; A-E
+		byte $66,$46,$67,$47,$68,$48,$69,$49,$6A,$4A	; F-J
+		byte $6B,$4B,$6C,$4C,$6D,$4D,$6E,$4E,$6F,$4F	; K-O
+		byte $70,$50,$71,$51,$72,$52,$73,$53,$74,$54	; P-T
+		byte $75,$55,$76,$56,$77,$57,$78,$58,$79,$59	; U-Y
+		byte $7A,$5A					; Z
+		
+		byte $30,$29,$31,$21,$32,$40,$33,$23,$34,$24	; ) ! @ # $
+		byte $35,$25,$36,$5e,$37,$26,$38,$2a,$39,$28	; % ^ & * (
+
+		byte $60,$7e,$2d,$5f,$3d,$2b,$5b,$7b,$5d,$7d	; ~ _ + { }
+		byte $5c,$7c,$20,$20				; | SPC 
+		
+		byte $3b,$3a,$27,$22				; : "
+		byte $2c,$3c,$2e,$3e,$2f,$3f			; < > ?
+
+		byte $e0,$f0,$e1,$f1,$e2,$f2,$e3,$f3,$e4,$f4	; keypad pseudocodes
+		byte $e5,$f5,$e6,$f6,$e7,$f7,$e8,$f8,$e9,$f9	
+		byte $ea,$fa,$eb,$fb,$ec,$fc,$ed,$fd,$ee,$fe	
+
+		byte 0
+
+kbd_normalize:	byte $f0,$30,$f1,$31,$f2,$32,$f3,$33,$f4,$34	; 0-4
+		byte $f5,$35,$f6,$36,$f7,$37,$f8,$38,$f9,$39	; 5-9
+		byte $fa,$2f,$fb,$2a,$fc,$2d,$fd,$2b,$fe,$2e	; / * - + .
+		byte $ea,$2f,$eb,$2a,$ec,$2d,$ed,$2b,$e5,$35	; / * - + 5
+
+		byte $e0,$b4,$e1,$b7,$e2,$b1,$e3,$b9,$e4,$b2
+		byte $e6,$b3,$e7,$b6,$e8,$b0,$e9,$b8,$ee,$7f
+
+		byte 0
+
+kbd_map:	byte $1c,$61,$32,$62,$21,$63,$23,$64,$24,$65	; a-e
+		byte $2b,$66,$34,$67,$33,$68,$43,$69,$3b,$6a	; f-j
+		byte $42,$6b,$4b,$6c,$3a,$6d,$31,$6e,$44,$6f	; k-o
+		byte $4d,$70,$15,$71,$2d,$72,$1b,$73,$2c,$74	; p-t
+		byte $3c,$75,$2a,$76,$1d,$77,$22,$78,$35,$79	; u-y
+		byte $1a,$7a					; z 
+
+		byte $45,$30,$16,$31,$1e,$32,$26,$33,$25,$34	; 0-4
+		byte $2e,$35,$36,$36,$3d,$37,$3e,$38,$46,$39	; 5-9
+
+		byte $76,$1b,$05,$a0,$06,$a1,$04,$a2,$0c,$a3	; ESC F1..4
+		byte $03,$a4,$0b,$a5,$83,$a6,$0a,$a7,$01,$a8	; F5..F9
+		byte $09,$a9,$78,$aa,$07,$ab			; F10..F12
+
+		byte $0e,$60,$4e,$2d,$55,$3d,$54,$5b,$5b,$5d	; ` - = [ ]
+		byte $66,$08,$0d,$09,$5d,$5c,$29,$20		; BS TAB \ SPC
+
+		byte $4c,$3b,$52,$27,$5a,$0d			; ; ' ENT
+		byte $41,$2c,$49,$2e,$4a,$2f			; , . /
+
+		byte $70,$e0,$69,$e1,$72,$e2,$7a,$e3		; KP: 0-3
+		byte $6b,$e4,$73,$e5,$74,$e6,$6c,$e7		; KP: 4-7
+		byte $75,$e8,$7d,$e9				; KP: 8-9
+		byte $7c,$eb,$7b,$ec,$79,$ed,$71,$ee		; KP: * - + .
+
+		byte 0
+
+kbd_map0:	byte $5a,$0d,$4a,$ea			; KP: ENT /
+		byte $75,$b0,$72,$b1,$6b,$b2,$74,$b3	; arrows U D L R
+		byte $70,$b4,$71,$7f,$6c,$b6,$69,$b7	; INS DEL HOME END
+		byte $7d,$b8,$7a,$b9			; PGUP PGDN
+
+		byte 0
+
+
+; ***************************************************************************
 ; 
 ; IRQ handler
 ;
@@ -994,150 +1416,14 @@ resvec:		jmp <reset
 
 ; ***************************************************************************
 
-KBD_LCTRL=$80		; kbd_shift
-KBD_RCTRL=$40
-KBD_LSHFT=$20
-KBD_RSHFT=$10
-KBD_LALT=$08
-KBD_RALT=$04
-KBD_CAPS=$02
-KBD_NUM=$01
-
-KBD_BREAK=$80		; kbd_state
-KBD_E0=$40		
-KBD_E1=$20
-
 		org $70000
 
 		lda #>$44
 		jsr <chrout
 
-		lda <VIA_DDR_A		; release clock
-		and #>~A_KBCLK
-		sta <VIA_DDR_A
-
 		stz >kbd_shift
-		stz >kbd_state
 
-1:		jsr kbd_scan
-		bcs >1b
-		lda #>$2e
+1:		jsr <inkey
 		jsr <chrout
 		bra >1b
-
-	; wait for key from keyboard,
-	; 
-
-
-polcat:		
-
-	; read keyboard scan code
-	;
-	; carry clear means A holds scan code
-	; carry set means keyboard timeout or error
-	;
-	; x, scratch0-2 destroyed
-
-kbd_scan: 	lda <VIA_DDR_A		; release clock
-		and #>~A_KBCLK
-		sta <VIA_DDR_A
-
-		jsr kbd_bit		; get start bit
-		bcc >2f
-
-1:		; error exit
-
-		lda <VIA_DDR_A		; inhibit clock
-		ora #>A_KBCLK
-		sta <VIA_DDR_A
-		sec
-		rts
-
-2:		bne >1b			; error if start bit not 0
-
-		; got a start bit, let's read a scan code
-
-		stz >scratch		; clear scratch (scan code)
-		stz >scratch+2		; clear parity counter
-		ldx #8			; read eight bits
-3:		jsr kbd_bit		; get next bit from keyboard
-		bcs >1b			; carry? error exit.
-		beq >4f			; if 0, go ROR with C=0
-		inc >scratch+2		; bump parity counter
-		sec			; it was a 1
-4: 		ror >scratch
-		dex			; one less bit
-		bne >3b			; not done yet
-
-		; got the scan code
-		; now get the parity bit
-
-		jsr kbd_bit		; parity bit
-		bcs >1b			; carry - error
-		beq >5f			; skip if zero
-		inc >scratch+2		; bump parity
-5:		lda >scratch+2		; check parity
-		bit #>$01		; should be odd
-		beq >1b			; parity error
-
-		; stop bit 
-
-		jsr kbd_bit		; stop bit
-		bcs >1b			; carry - error
-		beq >1b			; stop bit must be 1, else error
-
-		; that's it, all 11 bits check
-
-		lda <VIA_DDR_A		; inhibit clock
-		ora #>A_KBCLK
-		sta <VIA_DDR_A
-
-		lda >scratch
-		clc
-		rts
-
-	; get bit from keyboard
-	; carry set on error/timeout, zero flag contains input bit
-	;
-	; destroys a, scratch+1
-
-kbd_bit:	lda >frames
-		inc			; two frames in the future
-		inc
-		sta >scratch+1		; timeout
-
-1:		lda <VIA_A		; wait for clock HIGH
-		bit #>A_KBCLK
-		bne >3f			; it's high, continue
-		lda >frames		; not high yet, check timeout
-		cmp >scratch+1		
-		bne >1b			; no timeout, loop around
-2:		sec			; timeout, set carry
-		rts			; and return
-
-3:		lda <VIA_A		; wait for clock LO
-		bit #>A_KBCLK		
-		beq >4f			; clock is low, continue
-		lda >frames		; not low yet, check timeout
-		cmp >scratch+1
-		bne >3b			; nope, loop
-		bra >2b			; error
-	
-4:		lda <VIA_B		; read data
-		bit #>B_KBDATA		; set Z flag based on data
-		clc
-		rts
-
-
-chars:		byte $30,$31,$32,$33,$34,$35,$36,$37
-		byte $38,$39,$41,$42,$43,$44,$45,$46
-
-hexout:		xba
-		lda #>0
-		xba
-		tax
-		lda <chars,x
-		jsr <chrout
-		rts
-
 
