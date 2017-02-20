@@ -50,7 +50,7 @@ struct mnemonic {
 
 void brk_handler(void);
 void byte_handler(void), word_handler(void), long_handler(void);
-void org_handler(void), bss_handler(void), fcs_handler(void);
+void org_handler(void), bss_handler(void), fcc_handler(void), fcs_handler(void);
 
 struct mnemonic mnemonics[] = {
 	{ "ADC", .abs=0x6d, .ax=0x7d, .ay=0x79, .al=0x6F, .alx=0x7F, 
@@ -93,6 +93,7 @@ struct mnemonic mnemonics[] = {
 		.id=0x52, .idl=0x47, .idsy=0x53, .idx=0x41, .idy=0x51, 
 		.idyl=0x57, .iax=0x5d, .d=0x45, .ds=0x43, .dx=0x55,
 		.imm=0x49, .i16=0x49 },
+	{ "FCC", .handler = fcc_handler },
 	{ "FCS", .handler = fcs_handler },
 	{ "INC", .inh=0x1a, .abs=0xee, .ax=0xfe, .d=0xe6, .dx=0xf6 },
 	{ "INX", .inh=0xe8 },
@@ -622,7 +623,7 @@ void long_handler(void) { con(3); }
 
 void bss_handler(void) { pc += get_value(1); }
 
-void fcs_handler(void) 
+void fc_handler(int hibit) 
 {
 	int i = *curp;
 	char *start;
@@ -635,12 +636,15 @@ void fcs_handler(void)
 
 	while (start < curp) {
 		i = *start++;
-		if (start == curp) i |= 0x80;
+		if ((start == curp) && hibit) i |= 0x80;
 		emit(1, i);
 	}
 
 	curp++;
 }
+
+void fcc_handler(void) { fc_handler(0); }
+void fcs_handler(void) { fc_handler(1); }
 
 void org_handler(void) { 
 	int value = get_value(1); 
